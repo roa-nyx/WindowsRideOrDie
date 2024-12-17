@@ -1,11 +1,12 @@
 ﻿// Copyright (c) Andrew Arnott. All rights reserved.
 // Licensed under the MIT license.
 
-/* AndrewArnott's version found at: https://gist.github.com/AArnott/2609636d2f2369495abe76e8a01446a4 */
 /* This is a derivative from multiple answers on https://stackoverflow.com/questions/3342941/kill-child-process-when-parent-process-is-killed */
 
-/* roa-nyx: Simplified by removing compiler conditionals (as we only need to support the latest .Net */
+/* roa-nyx: This is further a derivative of AndrewArnott's version found at: https://gist.github.com/AArnott/2609636d2f2369495abe76e8a01446a4 */
 
+using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using Microsoft.Win32.SafeHandles;
@@ -16,11 +17,6 @@ using static Windows.Win32.PInvoke;
 /// Allows processes to be automatically killed if this parent process unexpectedly quits
 /// (or when an instance of this class is disposed).
 /// </summary>
-/// <remarks>
-/// This "just works" on Windows 8.
-/// To support Windows Vista or Windows 7 requires an app.manifest with specific content
-/// <see href="https://stackoverflow.com/a/9507862/46926">as described here</see>.
-/// </remarks>
 namespace AndrewArnott;
 public class ProcessJobTracker : IDisposable
 {
@@ -36,6 +32,8 @@ public class ProcessJobTracker : IDisposable
 	/// </remarks>
 	private readonly SafeFileHandle jobHandle;
 
+	private static int jobCounter = 0;
+
 	/// <summary>
 	/// Initializes a new instance of the <see cref="ProcessJobTracker"/> class.
 	/// </summary>
@@ -46,15 +44,17 @@ public class ProcessJobTracker : IDisposable
 		// The job name is optional (and can be null) but it helps with diagnostics.
 		//  If it's not null, it has to be unique. Use SysInternals' Handle command-line
 		//  utility: handle -a ChildProcessTracker
-		string jobName = nameof(ProcessJobTracker) + Process.GetCurrentProcess().Id;
-		jobHandle = CreateJobObject(null, jobName);
+		lock (disposeLock)
+		{
+			jobHandle = CreateJobObject(null, nameof(WindowsRideOrDie) + jobCounter++);
+		}
 
 		var extendedInfo = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 		{
 			BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
 			{
-				LimitFlags = JOB_OBJECT_LIMIT.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-			},
+				LimitFlags = JOB_OBJECT_LIMIT.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+			}
 		};
 
 		if (!SetInformationJobObject(jobHandle, JOBOBJECTINFOCLASS.JobObjectExtendedLimitInformation, &extendedInfo, (uint)sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))
@@ -69,18 +69,11 @@ public class ProcessJobTracker : IDisposable
 	/// <param name="process">The process whose lifetime should never exceed the lifetime of the current process.</param>
 	public void AddProcess(Process process)
 	{
-		if (process is null)
-		{
-			throw new ArgumentNullException(nameof(process));
-		}
-
 #pragma warning disable CA1416
-		bool success = AssignProcessToJobObject(this.jobHandle, new SafeFileHandle(process.Handle, ownsHandle: false));
+		bool success = AssignProcessToJobObject(jobHandle, new SafeFileHandle(process.Handle, ownsHandle: false));
 #pragma warning restore CA1416
 		if (!success && !process.HasExited)
-		{
 			throw new Win32Exception();
-		}
 	}
 
 	/// <summary>
